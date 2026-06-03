@@ -35,6 +35,13 @@
   document.getElementById('canvas')
     .addEventListener('contextmenu', e => e.preventDefault());
 
+  // Browser/Android Back button: step back one screen (presets -> game ->
+  // menu) instead of leaving the page.
+  window.addEventListener('popstate', () => {
+    if (typeof Module !== 'undefined' && Module.calledRun && Module._web_popstate)
+      Module._web_popstate();
+  });
+
   var Module = {
     canvas: document.getElementById('canvas'),
     onRuntimeInitialized: function () {

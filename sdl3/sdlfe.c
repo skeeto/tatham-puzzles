@@ -34,6 +34,17 @@
 #include "puzzles.h"
 #include "puzzle-metadata.h"          /* generated: puzzle_metadata[] */
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+/* Browser history integration: push an entry when navigating into a game
+ * or preset screen, so the browser/Android Back button returns to the
+ * previous screen (via popstate -> web_popstate) instead of leaving the
+ * page. */
+EM_JS(void, js_history_push, (void), { history.pushState(null, ""); });
+EM_JS(void, js_history_back, (void), { history.back(); });
+static struct frontend *g_fe;          /* for the JS popstate bridge */
+#endif
+
 #ifndef PUZZLES_ASSET_DIR
 #define PUZZLES_ASSET_DIR "sdl3/assets"
 #endif
@@ -871,6 +882,9 @@ static void enter_game(struct frontend *fe, int idx)
     fe->state = ST_PLAY;
     compute_layout(fe);
     midend_force_redraw(fe->me);
+#ifdef __EMSCRIPTEN__
+    js_history_push();                  /* browser Back returns to the menu */
+#endif
 }
 
 static void leave_game(struct frontend *fe)
@@ -893,6 +907,39 @@ static void leave_game(struct frontend *fe)
     fe->state = ST_MENU;
     compute_layout(fe);
 }
+
+/* One-level "back": presets -> play, or play -> menu. */
+static void do_back(struct frontend *fe)
+{
+    if (fe->state == ST_PRESETS) {
+        fe->state = ST_PLAY;
+        compute_layout(fe);
+        midend_force_redraw(fe->me);
+    } else if (fe->state == ST_PLAY) {
+        leave_game(fe);
+    }
+}
+
+/* Trigger a back navigation. On the web this routes through browser history
+ * (popstate -> web_popstate -> do_back) so the Back button stays in sync;
+ * elsewhere it is immediate. */
+static void request_back(struct frontend *fe)
+{
+#ifdef __EMSCRIPTEN__
+    (void)fe;
+    js_history_back();
+#else
+    do_back(fe);
+#endif
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE void web_popstate(void)
+{
+    if (g_fe)
+        do_back(g_fe);
+}
+#endif
 
 static void collect_presets(struct preset_menu *menu, struct uibtn **items,
                             int *n, int *cap, const char *prefix)
@@ -934,6 +981,9 @@ static void open_presets(struct frontend *fe)
     fe->preset_scroll = 0;
     fe->state = ST_PRESETS;
     compute_layout(fe);
+#ifdef __EMSCRIPTEN__
+    js_history_push();
+#endif
 }
 
 static void apply_preset(struct frontend *fe, game_params *params)
@@ -943,9 +993,9 @@ static void apply_preset(struct frontend *fe, game_params *params)
     sfree(fe->colours);
     fe->colours = colours_from_midend(fe->me, &fe->ncolours);
     fetch_keys(fe);
-    fe->state = ST_PLAY;
-    compute_layout(fe);
-    midend_force_redraw(fe->me);
+    /* Selecting a preset returns to play; pop the presets history entry
+     * (do_back transitions ST_PRESETS -> ST_PLAY). */
+    request_back(fe);
 }
 
 /* ---------------------------------------------------------------------
@@ -1145,9 +1195,7 @@ static void list_select(struct frontend *fe, float X, float Y)
     } else if (fe->state == ST_PRESETS) {
         int idx;
         if (Y < HEADER_H * fe->dpr) {  /* header acts as Back */
-            fe->state = ST_PLAY;
-            compute_layout(fe);
-            midend_force_redraw(fe->me);
+            request_back(fe);
             return;
         }
         idx = hit_uibtn(fe->preset_items, fe->npreset_items, X,
@@ -1160,7 +1208,7 @@ static void list_select(struct frontend *fe, float X, float Y)
 static void do_toolbar(struct frontend *fe, int id)
 {
     switch (id) {
-      case TB_MENU:    leave_game(fe); break;
+      case TB_MENU:    request_back(fe); break;
       case TB_NEW:     midend_new_game(fe->me); midend_force_redraw(fe->me); break;
       case TB_RESTART: midend_restart_game(fe->me); midend_force_redraw(fe->me); break;
       case TB_UNDO:    send_key(fe, UI_UNDO); break;
@@ -1349,6 +1397,9 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     memset(fe, 0, sizeof(*fe));
     fe->ss = SUPERSAMPLE;
     *appstate = fe;
+#ifdef __EMSCRIPTEN__
+    g_fe = fe;
+#endif
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
@@ -1544,15 +1595,9 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
 
       case SDL_EVENT_KEY_DOWN:
         if (event->key.key == SDLK_ESCAPE) {
-            if (fe->state == ST_PRESETS) {
-                fe->state = ST_PLAY;
-                compute_layout(fe);
-                midend_force_redraw(fe->me);
-            } else if (fe->state == ST_PLAY) {
-                leave_game(fe);        /* back to the puzzle list */
-            } else {
+            if (fe->state == ST_MENU)
                 return SDL_APP_SUCCESS;
-            }
+            request_back(fe);          /* presets -> play, or play -> menu */
         } else if (playing) {
             int button = translate_key(event->key.key, event->key.mod);
             if (button != -1)
