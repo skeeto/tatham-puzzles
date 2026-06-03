@@ -35,6 +35,16 @@ else()
   set(PUZZLES_SDL3_WEB FALSE)
 endif()
 
+# Default the web build to MinSizeRel for a smaller PWA download, unless the
+# user picked a build type (and only for single-config generators). Native
+# keeps CMake's default. Set before the dependencies are configured so they
+# build size-optimised too. (Assertions stay on: cmake/setup.cmake strips
+# -DNDEBUG from the *REL* flag sets.)
+if(PUZZLES_SDL3_WEB AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE MinSizeRel CACHE STRING
+    "Build type (the SDL3 web build defaults to MinSizeRel)" FORCE)
+endif()
+
 # ---------------------------------------------------------------------
 # Dependencies: SDL3, SDL_ttf and FreeType, built from source for both the
 # native and web targets. Fetched as pinned HTTPS release tarballs verified
