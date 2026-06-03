@@ -702,15 +702,28 @@ static void size_puzzle_to(struct frontend *fe, int maxw, int maxh)
     fe->puzzle_w = w;
     fe->puzzle_h = h;
 
-    if (fe->puzzle_tex)
-        SDL_DestroyTexture(fe->puzzle_tex);
-    fe->puzzle_tex = SDL_CreateTexture(fe->renderer, SDL_PIXELFORMAT_RGBA8888,
-                                       SDL_TEXTUREACCESS_TARGET,
-                                       w * fe->ss, h * fe->ss);
-    SDL_SetTextureScaleMode(fe->puzzle_tex, SDL_SCALEMODE_LINEAR);
-    /* Composite the play area opaquely, and pre-clear it, so nothing the
-     * game leaves unpainted shows through as transparency. */
-    SDL_SetTextureBlendMode(fe->puzzle_tex, SDL_BLENDMODE_NONE);
+    /* Reuse the existing offscreen target when its device-pixel size is
+     * unchanged; only the GPU texture (re)allocation is skipped. We still
+     * re-clear it below, so a game that leaves pixels unpainted can never
+     * show stale content through. */
+    if (fe->puzzle_tex) {
+        float tw = 0, th = 0;
+        SDL_GetTextureSize(fe->puzzle_tex, &tw, &th);
+        if ((int)tw != w * fe->ss || (int)th != h * fe->ss) {
+            SDL_DestroyTexture(fe->puzzle_tex);
+            fe->puzzle_tex = NULL;
+        }
+    }
+    if (!fe->puzzle_tex) {
+        fe->puzzle_tex = SDL_CreateTexture(fe->renderer,
+                                           SDL_PIXELFORMAT_RGBA8888,
+                                           SDL_TEXTUREACCESS_TARGET,
+                                           w * fe->ss, h * fe->ss);
+        SDL_SetTextureScaleMode(fe->puzzle_tex, SDL_SCALEMODE_LINEAR);
+        /* Composite the play area opaquely so nothing the game leaves
+         * unpainted shows through as transparency. */
+        SDL_SetTextureBlendMode(fe->puzzle_tex, SDL_BLENDMODE_NONE);
+    }
     fe->render_target = fe->puzzle_tex;
     SDL_SetRenderTarget(fe->renderer, fe->puzzle_tex);
     SDL_SetRenderDrawColor(fe->renderer, 235, 235, 235, 255);
@@ -1764,11 +1777,26 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
         return SDL_APP_SUCCESS;
 
       case SDL_EVENT_WINDOW_RESIZED:
-      case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+      case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: {
+        /* The web build emits a burst of identical resize events during
+         * load. Only relayout (and force a full redraw) when the render
+         * output size or device-pixel ratio has actually changed, so we
+         * don't reallocate the offscreen target and repaint the whole
+         * puzzle several times over for no change. compute_layout derives
+         * dpr the same way, so recompute it here to compare. */
+        int nw = 0, nh = 0, ww = 0, wh = 0;
+        float ndpr;
+        SDL_GetRenderOutputSize(fe->renderer, &nw, &nh);
+        SDL_GetWindowSize(fe->window, &ww, &wh);
+        ndpr = (ww > 0) ? (float)nw / (float)ww : 1.0f;
+        if (ndpr < 1.0f) ndpr = 1.0f;
+        if (nw == fe->win_w && nh == fe->win_h && ndpr == fe->dpr)
+            break;                     /* spurious no-op resize */
         compute_layout(fe);
         if (fe->me)
             midend_force_redraw(fe->me);
         break;
+      }
 
       case SDL_EVENT_KEY_DOWN:
         if (event->key.key == SDLK_ESCAPE) {
