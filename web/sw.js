@@ -1,6 +1,6 @@
 /* Service worker: precache the app shell so Puzzles works offline and is
  * installable. Bump CACHE when any cached asset changes. */
-const CACHE = 'puzzles-v4';
+const CACHE = 'puzzles-v5';
 const ASSETS = [
   './',
   'index.html',

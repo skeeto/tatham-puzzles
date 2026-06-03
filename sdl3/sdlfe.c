@@ -340,33 +340,54 @@ static void sdl_draw_rect(drawing *dr, int x, int y, int w, int h, int colour)
     SDL_RenderFillRect(fe->renderer, &r);
 }
 
+/* A 1px logical line must cover ss device pixels: for the right visual
+ * weight, and -- crucially -- so polygon fills (drawn by
+ * draw_polygon_fallback as one logical scanline per row) leave no undrawn
+ * device rows between scanlines. The line is drawn CENTRED and square-
+ * capped so its thickness is uniform regardless of direction and adjacent
+ * fill scanlines abut cleanly (an earlier one-sided version made line
+ * weight direction-dependent and left gaps between fill and edges). */
 static void sdl_draw_line(drawing *dr, int x1, int y1, int x2, int y2,
                           int colour)
 {
     struct frontend *fe = FE_FROM_DR(dr);
-    int ss = fe->ss, i;
+    int ss = fe->ss;
+    float w = (float)ss, hw = w / 2.0f;
     float X1 = (float)(x1 * ss), Y1 = (float)(y1 * ss);
     float X2 = (float)(x2 * ss), Y2 = (float)(y2 * ss);
-    float dx = X2 - X1, dy = Y2 - Y1, len = sqrt(dx * dx + dy * dy), px, py;
 
-    set_draw_colour(fe, colour);
-
-    /* A 1px logical line must cover ss device pixels, both to look the
-     * right weight and -- crucially -- so polygon fills (drawn by
-     * draw_polygon_fallback as one logical scanline per row) leave no
-     * undrawn device rows between scanlines (which would show through as
-     * transparency). Draw ss parallel copies offset perpendicularly. */
-    if (len < 0.5f) {
-        SDL_FRect r = { X1, Y1, (float)ss, (float)ss };
+    if (y1 == y2) {                    /* horizontal: centred thick rect */
+        float xa = (X1 < X2 ? X1 : X2) - hw, xb = (X1 > X2 ? X1 : X2) + hw;
+        SDL_FRect r = { xa, Y1 - hw, xb - xa, w };
+        set_draw_colour(fe, colour);
         SDL_RenderFillRect(fe->renderer, &r);
-        return;
-    }
-    px = -dy / len;
-    py = dx / len;
-    for (i = 0; i < ss; i++) {
-        float o = (float)i;
-        SDL_RenderLine(fe->renderer, X1 + px * o, Y1 + py * o,
-                       X2 + px * o, Y2 + py * o);
+    } else if (x1 == x2) {             /* vertical */
+        float ya = (Y1 < Y2 ? Y1 : Y2) - hw, yb = (Y1 > Y2 ? Y1 : Y2) + hw;
+        SDL_FRect r = { X1 - hw, ya, w, yb - ya };
+        set_draw_colour(fe, colour);
+        SDL_RenderFillRect(fe->renderer, &r);
+    } else {                           /* diagonal: centred thick quad */
+        float dx = X2 - X1, dy = Y2 - Y1, len = sqrt(dx * dx + dy * dy);
+        float ex = dx / len * hw, ey = dy / len * hw;   /* square cap */
+        float nx = -dy / len * hw, ny = dx / len * hw;  /* perpendicular */
+        float ax = X1 - ex, ay = Y1 - ey, bx = X2 + ex, by = Y2 + ey;
+        SDL_Color col = { 0, 0, 0, 255 };
+        SDL_FColor fc;
+        SDL_Vertex v[4];
+        int idx[6] = { 0, 1, 2, 0, 2, 3 }, i;
+        if (colour >= 0 && colour < fe->ncolours)
+            col = fe->colours[colour];
+        fc.r = col.r / 255.0f; fc.g = col.g / 255.0f;
+        fc.b = col.b / 255.0f; fc.a = col.a / 255.0f;
+        v[0].position = (SDL_FPoint){ ax + nx, ay + ny };
+        v[1].position = (SDL_FPoint){ ax - nx, ay - ny };
+        v[2].position = (SDL_FPoint){ bx - nx, by - ny };
+        v[3].position = (SDL_FPoint){ bx + nx, by + ny };
+        for (i = 0; i < 4; i++) {
+            v[i].color = fc;
+            v[i].tex_coord.x = v[i].tex_coord.y = 0;
+        }
+        SDL_RenderGeometry(fe->renderer, NULL, v, 4, idx, 6);
     }
 }
 
