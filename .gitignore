@@ -155,3 +155,9 @@ include/
 /unfinished/sokoban
 /unfinished/*.exe
 /*.desktop
+
+# SDL3 PWA fork: build directories and local agent/editor config
+/build-sdl3/
+/build-web/
+/build*/
+/.claude/

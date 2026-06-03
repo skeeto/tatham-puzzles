@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#1c1c20">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Puzzles</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #1c1c20;
+               overflow: hidden; overscroll-behavior: none; }
+  /* The canvas fills the viewport; touch-action:none stops the browser
+     from hijacking drags/zoom so the puzzles get the gestures. */
+  #canvas { display: block; width: 100vw; height: 100dvh;
+            touch-action: none; outline: none; }
+  #loading { position: fixed; inset: 0; display: flex; align-items: center;
+             justify-content: center; color: #ccc;
+             font: 16px sans-serif; }
+</style>
+</head>
+<body>
+<div id="loading">Loading puzzles…</div>
+<canvas id="canvas" tabindex="-1"></canvas>
+<script>
+  // SDL (with SDL_WINDOW_HIGH_PIXEL_DENSITY) owns the canvas backing-store
+  // size, tracking the element's CSS size times devicePixelRatio. We only
+  // size it via CSS (100vw/100dvh) above; don't set width/height here or
+  // it fights SDL.
+  // Let right-clicks and long-presses reach SDL (e.g. Singles circles,
+  // Mines flags) instead of popping the browser context menu.
+  document.getElementById('canvas')
+    .addEventListener('contextmenu', e => e.preventDefault());
+
+  var Module = {
+    canvas: document.getElementById('canvas'),
+    onRuntimeInitialized: function () {
+      const el = document.getElementById('loading');
+      if (el) el.remove();
+    }
+  };
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () =>
+      navigator.serviceWorker.register('sw.js').catch(() => {}));
+  }
+</script>
+<script async src="puzzles.js"></script>
+</body>
+</html>

@@ -30,7 +30,11 @@ string(REPLACE "-DNDEBUG" "" CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWI
 #  - define set_platform_puzzle_target_properties(), used below
 #  - define build_platform_extras(), called from the top-level CMakeLists.txt
 #  - override the above build_* settings, if necessary
-if(CMAKE_SYSTEM_NAME MATCHES "Windows")
+option(PUZZLES_SDL3
+  "Build the from-scratch SDL3 front end (single combined binary / Wasm)" OFF)
+if(PUZZLES_SDL3)
+  include(cmake/platforms/sdl3.cmake)
+elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
   include(cmake/platforms/windows.cmake)
 elseif(CMAKE_SYSTEM_NAME MATCHES "Darwin")
   include(cmake/platforms/osx.cmake)
