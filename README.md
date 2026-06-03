@@ -1,7 +1,7 @@
 # [Simon Tatham's Puzzle Collection][p] as a Progressive Web App (PWA)
 
 This project makes the puzzle collection available as a [PWA][] that you
-can install on in device via the [PWA's website][]. You can also just play
+can install on in device via the PWA's [website][]. You can also just play
 the puzzles directly on the site, enjoying full persistence like an app.
 
 ## Build
