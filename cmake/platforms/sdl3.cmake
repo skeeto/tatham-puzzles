@@ -11,6 +11,15 @@
 
 include(FetchContent)
 
+# CMake 3.24+ warns (CMP0135) unless we choose how timestamps of files
+# extracted from URL downloads are set. NEW = stamp them at extraction time,
+# so changing a pinned URL/hash reliably retriggers a rebuild (the OLD
+# behaviour keeps the archive's own timestamps). Guarded so older CMake,
+# which lacks the policy and doesn't warn, just ignores it.
+if(POLICY CMP0135)
+  cmake_policy(SET CMP0135 NEW)
+endif()
+
 # One combined target, built in build_platform_extras() like the macOS
 # build. No per-puzzle binaries and no CLI/GUI helper tools.
 set(build_individual_puzzles FALSE)
