@@ -36,40 +36,55 @@ else()
 endif()
 
 # ---------------------------------------------------------------------
-# Dependencies: SDL3 and SDL_ttf, built from source so both the native
-# and web targets are self-contained and reproducible.
+# Dependencies: SDL3, SDL_ttf and FreeType, built from source for both the
+# native and web targets. Fetched as pinned HTTPS release tarballs verified
+# by SHA256 -- reproducible and hermetic (no git clones or submodules).
+# (SDL_ttf's own release tarball ships only dependency-download scripts, so
+# we provide FreeType ourselves and point SDL_ttf at it.)
 # ---------------------------------------------------------------------
-set(PUZZLES_SDL3_TAG     release-3.2.30 CACHE STRING "SDL3 git tag to build")
-set(PUZZLES_SDL3_TTF_TAG release-3.2.2  CACHE STRING "SDL_ttf git tag to build")
 
-# Force static, trimmed builds of the dependencies.
+# Force static, trimmed builds of the dependencies, and keep their own
+# install rules out of our deploy directory (FreeType honours
+# SKIP_INSTALL_ALL; SDL/SDL_ttf honour the *_INSTALL options below).
 set(BUILD_SHARED_LIBS OFF)
+set(SKIP_INSTALL_ALL ON CACHE BOOL "" FORCE)
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC ON CACHE BOOL "" FORCE)
 set(SDL_TEST OFF CACHE BOOL "" FORCE)
 set(SDL_TESTS OFF CACHE BOOL "" FORCE)
 set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
-# SDL_ttf: build a vendored FreeType from source (no system dependency),
-# and keep it lean for v1 (no HarfBuzz / SVG backends).
-set(SDLTTF_VENDORED ON CACHE BOOL "" FORCE)
+# FreeType: minimal, no optional codecs (SDL_ttf only needs the rasteriser),
+# so we don't pull in zlib/png/harfbuzz/brotli/bzip2.
+set(FT_DISABLE_ZLIB ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_BZIP2 ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_PNG ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_BROTLI ON CACHE BOOL "" FORCE)
+# SDL_ttf: just the FreeType backend, using the FreeType we provide below.
+set(SDLTTF_VENDORED OFF CACHE BOOL "" FORCE)
 set(SDLTTF_SAMPLES OFF CACHE BOOL "" FORCE)
 set(SDLTTF_HARFBUZZ OFF CACHE BOOL "" FORCE)
 set(SDLTTF_PLUTOSVG OFF CACHE BOOL "" FORCE)
 set(SDLTTF_INSTALL OFF CACHE BOOL "" FORCE)
 
+FetchContent_Declare(freetype
+  URL https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.gz
+  URL_HASH SHA256=5c3a8e78f7b24c20b25b54ee575d6daa40007a5f4eea2845861c3409b3021747
+  OVERRIDE_FIND_PACKAGE)
 FetchContent_Declare(SDL3
-  GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-  GIT_TAG ${PUZZLES_SDL3_TAG}
-  GIT_SHALLOW TRUE
-  GIT_PROGRESS TRUE)
-# Not shallow: SDL_ttf pulls its FreeType dependency in via submodules,
-# which a shallow clone can't resolve to a pinned commit.
+  URL https://github.com/libsdl-org/SDL/releases/download/release-3.2.30/SDL3-3.2.30.tar.gz
+  URL_HASH SHA256=4c3b09330d866dc52eb65b66259a6684ad387252ca8c57901b3a2b534eb42e3d)
 FetchContent_Declare(SDL3_ttf
-  GIT_REPOSITORY https://github.com/libsdl-org/SDL_ttf.git
-  GIT_TAG ${PUZZLES_SDL3_TTF_TAG}
-  GIT_SUBMODULES_RECURSE TRUE
-  GIT_PROGRESS TRUE)
+  URL https://github.com/libsdl-org/SDL_ttf/releases/download/release-3.2.2/SDL3_ttf-3.2.2.tar.gz
+  URL_HASH SHA256=63547d58d0185c833213885b635a2c0548201cc8f301e6587c0be1a67e1e045d)
+
+# Build FreeType first and expose the target name SDL_ttf links against
+# (find_package(Freetype) is satisfied by OVERRIDE_FIND_PACKAGE above).
+FetchContent_MakeAvailable(freetype)
+if(NOT TARGET Freetype::Freetype)
+  add_library(Freetype::Freetype ALIAS freetype)
+endif()
 FetchContent_MakeAvailable(SDL3 SDL3_ttf)
 
 # ---------------------------------------------------------------------
@@ -152,7 +167,18 @@ function(build_platform_extras)
       ${preload})
 
     # Copy the PWA shell (index.html, manifest, service worker, icons)
-    # next to the generated puzzles.js/.wasm/.data.
+    # next to the generated puzzles.js/.wasm/.data, so the build directory
+    # is directly servable (e.g. with emrun) for local testing.
     file(COPY ${PUZZLES_ROOT_DIR}/web/ DESTINATION ${CMAKE_BINARY_DIR})
+
+    # `cmake --install <build-dir> --prefix <dir>` assembles a flat,
+    # deployable PWA directory (e.g. to publish to gh-pages): the Wasm
+    # module, its preloaded data, and the shell + manifest + icons.
+    install(FILES
+      ${CMAKE_BINARY_DIR}/puzzles.js
+      ${CMAKE_BINARY_DIR}/puzzles.wasm
+      ${CMAKE_BINARY_DIR}/puzzles.data
+      DESTINATION .)
+    install(DIRECTORY ${PUZZLES_ROOT_DIR}/web/ DESTINATION .)
   endif()
 endfunction()
