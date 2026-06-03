@@ -33,6 +33,7 @@
 
 #include "puzzles.h"
 #include "puzzle-metadata.h"          /* generated: puzzle_metadata[] */
+#include "storage.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -169,6 +170,11 @@ struct frontend {
 
     bool timer_active;
     Uint64 last_ticks;
+
+    /* Persistence: save the active game's state after each settled
+     * interaction, and remember which game is active across launches. */
+    bool persist_enabled;              /* off for screenshot/test modes */
+    bool dirty;                        /* game state changed since last save */
 
     char *statustext;
 
@@ -888,21 +894,104 @@ static void compute_layout(struct frontend *fe)
 }
 
 /* ---------------------------------------------------------------------
+ * Persistence: serialise the active game and remember which is active.
+ * ------------------------------------------------------------------- */
+
+/* Stable storage key for a game (its lowercase id, e.g. "net"). */
+static const char *game_key(int idx)
+{
+    return (idx >= 0 && idx < n_puzzle_metadata) ? puzzle_metadata[idx].name
+                                                 : "game";
+}
+
+struct sbuf { char *buf; int len, cap; };
+static void sbuf_write(void *ctx, const void *data, int len)
+{
+    struct sbuf *s = ctx;
+    if (s->len + len + 1 > s->cap) {
+        s->cap = (s->len + len + 1) * 2;
+        s->buf = sresize(s->buf, s->cap, char);
+    }
+    memcpy(s->buf + s->len, data, len);
+    s->len += len;
+    s->buf[s->len] = '\0';
+}
+static char *serialise_to_string(midend *me)
+{
+    struct sbuf s;
+    s.cap = 1024;
+    s.buf = snewn(s.cap, char);
+    s.len = 0;
+    s.buf[0] = '\0';
+    midend_serialise(me, sbuf_write, &s);
+    return s.buf;                       /* caller frees with sfree */
+}
+
+struct rbuf { const char *buf; int len, pos; };
+static bool rbuf_read(void *ctx, void *dst, int len)
+{
+    struct rbuf *r = ctx;
+    if (r->pos + len > r->len)
+        return false;
+    memcpy(dst, r->buf + r->pos, len);
+    r->pos += len;
+    return true;
+}
+static bool deserialise_from_string(midend *me, const char *s)
+{
+    struct rbuf r;
+    r.buf = s;
+    r.len = (int)strlen(s);
+    r.pos = 0;
+    return midend_deserialise(me, rbuf_read, &r) == NULL;
+}
+
+/* Save the active game's full state under its key. */
+static void persist_game(struct frontend *fe)
+{
+    char *s;
+    if (!fe->persist_enabled || fe->state != ST_PLAY || !fe->me)
+        return;
+    s = serialise_to_string(fe->me);
+    storage_set(game_key(fe->game_idx), s);
+    sfree(s);
+    fe->dirty = false;
+}
+
+/* ---------------------------------------------------------------------
  * Entering / leaving puzzles, and the preset picker.
  * ------------------------------------------------------------------- */
 
 static void enter_game(struct frontend *fe, int idx)
 {
+    bool loaded = false;
+
     fe->game_idx = idx;
     fe->ourgame = gamelist[idx];
     fe->me = midend_new(fe, fe->ourgame, &sdl_drawing, fe);
-    midend_new_game(fe->me);
+
+    /* Resume this puzzle's saved state if we have one (and aren't in a
+     * screenshot/test run); otherwise generate a fresh puzzle. */
+    if (fe->persist_enabled) {
+        char *saved = storage_get(game_key(idx));
+        if (saved) {
+            loaded = deserialise_from_string(fe->me, saved);
+            sfree(saved);
+        }
+    }
+    if (!loaded)
+        midend_new_game(fe->me);
+
     sfree(fe->colours);
     fe->colours = colours_from_midend(fe->me, &fe->ncolours);
     fetch_keys(fe);
     fe->state = ST_PLAY;
     compute_layout(fe);
     midend_force_redraw(fe->me);
+    if (fe->persist_enabled) {
+        storage_set("active", game_key(idx));
+        persist_game(fe);              /* save the resumed/fresh board */
+    }
 #ifdef __EMSCRIPTEN__
     js_history_push();                  /* browser Back returns to the menu */
 #endif
@@ -910,6 +999,9 @@ static void enter_game(struct frontend *fe, int idx)
 
 static void leave_game(struct frontend *fe)
 {
+    persist_game(fe);                  /* final save before tearing down */
+    if (fe->persist_enabled)
+        storage_set("active", "");     /* relaunch shows the menu */
     if (fe->me) {
         midend_free(fe->me);
         fe->me = NULL;
@@ -1014,6 +1106,7 @@ static void apply_preset(struct frontend *fe, game_params *params)
     sfree(fe->colours);
     fe->colours = colours_from_midend(fe->me, &fe->ncolours);
     fetch_keys(fe);
+    fe->dirty = true;                  /* save the new board once back in play */
     /* Selecting a preset returns to play; pop the presets history entry
      * (do_back transitions ST_PRESETS -> ST_PLAY). */
     request_back(fe);
@@ -1171,6 +1264,7 @@ static void send_key(struct frontend *fe, int button)
 {
     midend_process_key(fe->me, 0, 0, button);
     midend_redraw(fe->me);
+    fe->dirty = true;                  /* saved once the interaction settles */
 }
 
 static void send_at(struct frontend *fe, float X, float Y, int button)
@@ -1180,6 +1274,7 @@ static void send_at(struct frontend *fe, float X, float Y, int button)
         return;
     midend_process_key(fe->me, px, py, button);
     midend_redraw(fe->me);
+    fe->dirty = true;
 }
 
 static void clamp_scroll(struct frontend *fe)
@@ -1230,11 +1325,14 @@ static void do_toolbar(struct frontend *fe, int id)
 {
     switch (id) {
       case TB_MENU:    request_back(fe); break;
-      case TB_NEW:     midend_new_game(fe->me); midend_force_redraw(fe->me); break;
-      case TB_RESTART: midend_restart_game(fe->me); midend_force_redraw(fe->me); break;
+      case TB_NEW:     midend_new_game(fe->me); midend_force_redraw(fe->me);
+                       fe->dirty = true; break;
+      case TB_RESTART: midend_restart_game(fe->me); midend_force_redraw(fe->me);
+                       fe->dirty = true; break;
       case TB_UNDO:    send_key(fe, UI_UNDO); break;
       case TB_REDO:    send_key(fe, UI_REDO); break;
-      case TB_SOLVE:   midend_solve(fe->me); midend_force_redraw(fe->me); break;
+      case TB_SOLVE:   midend_solve(fe->me); midend_force_redraw(fe->me);
+                       fe->dirty = true; break;
       case TB_TYPE:    open_presets(fe); break;
     }
 }
@@ -1463,8 +1561,43 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     memset(fe->thumbs, 0, gamecount * sizeof(SDL_Texture *));
     fe->state = ST_MENU;
 
+    /* Persist game state during normal use, but not while taking
+     * screenshots or running the input self-tests. */
+    fe->persist_enabled = !(fe->shot_path || getenv("PUZZLES_SELFTEST") ||
+                            getenv("PUZZLES_NAVTEST"));
+    storage_init();
+
     gamename = (argc > 1) ? argv[1] : getenv("PUZZLES_GAME");
     gameidx = find_game_index(gamename);
+
+    /* Cross-process persistence test (PUZZLES_PERSISTTEST=save|load): run
+     * "save" makes a move and saves; a later "load" run should resume it. */
+    if ((env = getenv("PUZZLES_PERSISTTEST")) != NULL) {
+        if (!strcmp(env, "save")) {
+            int idx = find_game_index("net");
+            float cx, cy;
+            enter_game(fe, idx);
+            cx = fe->play_x + fe->puzzle_w * fe->dpr / 3.0f;
+            cy = fe->play_y + fe->puzzle_h * fe->dpr / 3.0f;
+            send_at(fe, cx, cy, LEFT_BUTTON);
+            send_at(fe, cx, cy, LEFT_RELEASE);
+            persist_game(fe);
+            printf("PERSISTTEST save: net can_undo=%d\n",
+                   midend_can_undo(fe->me));
+        } else {
+            char *active = storage_get("active");
+            int idx = (active && *active) ? find_game_index(active) : -1;
+            if (idx >= 0) {
+                enter_game(fe, idx);
+                printf("PERSISTTEST load: active=%s can_undo=%d\n",
+                       active, midend_can_undo(fe->me));
+            } else {
+                printf("PERSISTTEST load: no active game\n");
+            }
+            sfree(active);
+        }
+        return SDL_APP_SUCCESS;
+    }
 
     /* Headless input smoke test (PUZZLES_SELFTEST): drive the real input
      * path and confirm a move registers. A left click makes a move in
@@ -1518,7 +1651,19 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
         if (getenv("PUZZLES_PRESETS")) /* debug: open the type picker */
             open_presets(fe);
     } else {
-        compute_layout(fe);            /* otherwise start at the menu */
+        /* Restore the game that was active when we were last closed, so
+         * the app resumes exactly where the user left off. */
+        int aidx = -1;
+        if (fe->persist_enabled) {
+            char *active = storage_get("active");
+            if (active && *active)
+                aidx = find_game_index(active);
+            sfree(active);
+        }
+        if (aidx >= 0)
+            enter_game(fe, aidx);
+        else
+            compute_layout(fe);        /* otherwise start at the menu */
     }
 
     return SDL_APP_CONTINUE;
@@ -1544,6 +1689,10 @@ SDL_AppResult SDL_AppIterate(void *appstate)
             fe->touch_dragging = true; /* so finger-up emits RIGHT_RELEASE */
             send_at(fe, fe->touch_x0, fe->touch_y0, RIGHT_BUTTON | MOD_STYLUS);
         }
+        /* Persist the board once an interaction has settled (no button or
+         * finger held), so a kill at any moment loses nothing committed. */
+        if (fe->dirty && !fe->mouse_down && !fe->touch_active)
+            persist_game(fe);
     } else if (!fe->scrolling && !fe->touch_active &&
                fabs(fe->scroll_vel) >= 1.0f) {
         /* Momentum: glide the list after a flick, with friction. */

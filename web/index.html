@@ -30,6 +30,10 @@
   // size, tracking the element's CSS size times devicePixelRatio. We only
   // size it via CSS (100vw/100dvh) above; don't set width/height here or
   // it fights SDL.
+  // Ask the browser to keep our localStorage (saved games) from being
+  // evicted under storage pressure.
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+
   // Let right-clicks and long-presses reach SDL (e.g. Singles circles,
   // Mines flags) instead of popping the browser context menu.
   document.getElementById('canvas')

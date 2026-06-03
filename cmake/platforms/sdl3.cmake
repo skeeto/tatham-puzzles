@@ -110,6 +110,7 @@ function(build_platform_extras)
 
   add_executable(puzzles
     ${PUZZLES_ROOT_DIR}/sdl3/sdlfe.c
+    ${PUZZLES_ROOT_DIR}/sdl3/storage.c
     list.c
     ${puzzle_sources})
   target_compile_definitions(puzzles PRIVATE COMBINED)
