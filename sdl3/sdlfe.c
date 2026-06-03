@@ -349,10 +349,17 @@ static void sdl_draw_rect(drawing *dr, int x, int y, int w, int h, int colour)
 /* A 1px logical line must cover ss device pixels: for the right visual
  * weight, and -- crucially -- so polygon fills (drawn by
  * draw_polygon_fallback as one logical scanline per row) leave no undrawn
- * device rows between scanlines. The line is drawn CENTRED and square-
- * capped so its thickness is uniform regardless of direction and adjacent
- * fill scanlines abut cleanly (an earlier one-sided version made line
- * weight direction-dependent and left gaps between fill and edges). */
+ * device rows between scanlines.
+ *
+ * Axis-aligned lines are aligned to match draw_rect: a line at logical
+ * coordinate c occupies device pixels [c*ss, c*ss+ss), the same span as a
+ * rectangle edge there. This matters because some games (e.g. Tents) draw
+ * their grid with draw_line on every redraw while the per-tile draw_rect
+ * draws the same lines; if the two disagreed by a sub-pixel the lines would
+ * thicken once incremental redraws stopped repainting every tile. Endpoints
+ * keep a half-width square cap so corners join and fills reach edges.
+ * Diagonals stay centred (no rectangle to match) for direction-independent
+ * weight. */
 static void sdl_draw_line(drawing *dr, int x1, int y1, int x2, int y2,
                           int colour)
 {
@@ -362,14 +369,14 @@ static void sdl_draw_line(drawing *dr, int x1, int y1, int x2, int y2,
     float X1 = (float)(x1 * ss), Y1 = (float)(y1 * ss);
     float X2 = (float)(x2 * ss), Y2 = (float)(y2 * ss);
 
-    if (y1 == y2) {                    /* horizontal: centred thick rect */
+    if (y1 == y2) {                    /* horizontal: top-aligned thick rect */
         float xa = (X1 < X2 ? X1 : X2) - hw, xb = (X1 > X2 ? X1 : X2) + hw;
-        SDL_FRect r = { xa, Y1 - hw, xb - xa, w };
+        SDL_FRect r = { xa, Y1, xb - xa, w };
         set_draw_colour(fe, colour);
         SDL_RenderFillRect(fe->renderer, &r);
-    } else if (x1 == x2) {             /* vertical */
+    } else if (x1 == x2) {             /* vertical: left-aligned thick rect */
         float ya = (Y1 < Y2 ? Y1 : Y2) - hw, yb = (Y1 > Y2 ? Y1 : Y2) + hw;
-        SDL_FRect r = { X1 - hw, ya, w, yb - ya };
+        SDL_FRect r = { X1, ya, w, yb - ya };
         set_draw_colour(fe, colour);
         SDL_RenderFillRect(fe->renderer, &r);
     } else {                           /* diagonal: centred thick quad */
