@@ -212,6 +212,9 @@ static TTF_Font *get_font(struct frontend *fe, int type, int size)
     f = TTF_OpenFont(path, (float)size);
     if (!f)
         return NULL;
+    /* Disable kerning: DejaVu tucks letters under a leading 'T' (Type,
+     * Towers, Tatham), which reads as a glitch in short UI labels. */
+    TTF_SetFontKerning(f, false);
 
     if (fe->nfonts >= fe->fontsize) {
         fe->fontsize = fe->nfonts + 8;
@@ -764,10 +767,12 @@ static void layout_play(struct frontend *fe)
     fe->status_h = midend_wants_statusbar(fe->me) ? (int)(STATUS_H * s) : 0;
     fe->status_y = fe->keypad_y - fe->status_h;
 
+    /* Size the puzzle in logical points (device area / dpr); it is rendered
+     * into an ss-times-larger texture and composited back at puzzle*dpr. */
     avail_h = fe->status_y - fe->toolbar_h;
-    size_puzzle_to(fe, W, avail_h);
-    fe->play_x = (W - fe->puzzle_w) / 2;
-    fe->play_y = fe->toolbar_h + (avail_h - fe->puzzle_h) / 2;
+    size_puzzle_to(fe, (int)(W / s), (int)(avail_h / s));
+    fe->play_x = (W - (int)(fe->puzzle_w * s)) / 2;
+    fe->play_y = fe->toolbar_h + (avail_h - (int)(fe->puzzle_h * s)) / 2;
     if (fe->play_x < 0) fe->play_x = 0;
     if (fe->play_y < fe->toolbar_h) fe->play_y = fe->toolbar_h;
 }
@@ -835,12 +840,12 @@ static void compute_layout(struct frontend *fe)
     fe->dpr = (ww > 0) ? (float)fe->win_w / (float)ww : 1.0f;
     if (fe->dpr < 1.0f) fe->dpr = 1.0f;
 
-    /* Keep total puzzle supersampling near 2x of layout points: on a
-     * HiDPI display the device resolution already provides most of the
-     * sharpness, so we don't also multiply by a big ss. */
-    fe->ss = (int)(2.0f / fe->dpr + 0.5f);
-    if (fe->ss < 1) fe->ss = 1;
-    if (fe->ss > 2) fe->ss = 2;
+    /* The puzzle is laid out in logical points and rendered into a texture
+     * ss times larger, so puzzle "pixels" map to ~dpr device pixels (correct
+     * line weight, scaled fixed-size features) with anti-aliasing. ss must
+     * be >= dpr so the texture is at least device resolution. */
+    fe->ss = (int)ceil(fe->dpr);
+    if (fe->ss < 2) fe->ss = 2;
 
     if (fe->state == ST_MENU)
         layout_menu(fe);
@@ -1050,8 +1055,9 @@ static bool window_to_puzzle(struct frontend *fe, float X, float Y,
 {
     if (Y < fe->toolbar_h || Y >= fe->status_y)
         return false;                  /* toolbar / status bar / keypad */
-    *px = (int)(X - fe->play_x);
-    *py = (int)(Y - fe->play_y);
+    /* Window (device px) -> puzzle logical points. */
+    *px = (int)((X - fe->play_x) / fe->dpr);
+    *py = (int)((Y - fe->play_y) / fe->dpr);
     return true;
 }
 
@@ -1242,8 +1248,8 @@ static void render_play(struct frontend *fe)
 
     dst.x = (float)fe->play_x;
     dst.y = (float)fe->play_y;
-    dst.w = (float)fe->puzzle_w;
-    dst.h = (float)fe->puzzle_h;
+    dst.w = fe->puzzle_w * fe->dpr;     /* on-screen size in device px */
+    dst.h = fe->puzzle_h * fe->dpr;
     SDL_RenderTexture(fe->renderer, fe->puzzle_tex, NULL, &dst);
 
     /* Toolbar. */
@@ -1398,8 +1404,8 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
         if (gameidx < 0)
             gameidx = find_game_index("net");
         enter_game(fe, gameidx);
-        cx = fe->play_x + fe->puzzle_w / 3.0f;
-        cy = fe->play_y + fe->puzzle_h / 3.0f;
+        cx = fe->play_x + fe->puzzle_w * fe->dpr / 3.0f;
+        cy = fe->play_y + fe->puzzle_h * fe->dpr / 3.0f;
         before = midend_can_undo(fe->me);
         send_at(fe, cx, cy, LEFT_BUTTON);
         send_at(fe, cx, cy, LEFT_RELEASE);
@@ -1477,7 +1483,7 @@ SDL_AppResult SDL_AppIterate(void *appstate)
             == before)
             fe->scroll_vel = 0;        /* hit the top/bottom */
         else
-            fe->scroll_vel *= 0.90f;
+            fe->scroll_vel *= 0.95f;   /* friction (lower = glides longer) */
         if (fabs(fe->scroll_vel) < 1.0f)
             fe->scroll_vel = 0;
     }
